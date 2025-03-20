@@ -35,6 +35,8 @@ func AuthMiddleware(h http.Handler) http.Handler {
 	})
 }
 
+// new commit 1
+
 func main() {
 	defer db.Close()
 	router := chi.NewRouter()
