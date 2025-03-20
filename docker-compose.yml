@@ -1,0 +1,16 @@
+version: '3.7'
+
+services:
+  pglsqlramz:
+    container_name: ram_pgl
+    ports:
+      - "5432:5432"
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: postgres   
+      POSTGRES_PASSWORD: your_password  
+      POSTGRES_DB: bookstore    
+    volumes:
+      - database_data:/var/lib/postgresql/data:rw
+volumes:
+  database_data:
