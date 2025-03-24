@@ -14,6 +14,8 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
+// Код неполны надо обновить функции создания книги и получения их
+
 var db *sql.DB
 
 func init() {
@@ -25,7 +27,7 @@ func AuthMiddleware(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, err := r.Cookie("auth")
 		if err != nil {
-			fmt.Println("test")
+			fmt.Println("Есть Авторизация")
 			w.WriteHeader(http.StatusUnauthorized)
 			w.Write([]byte("Вы не авторизованы"))
 			return
@@ -42,39 +44,8 @@ func main() {
 	router := chi.NewRouter()
 
 	router.Group(func(r chi.Router) {
-		r.Post("/registration", func(w http.ResponseWriter, r *http.Request) {
-			fmt.Println("route", "registration")
-			//Регистрация добавление пользователя в БД
-
-		})
-		r.Post("/login", func(w http.ResponseWriter, r *http.Request) {
-			type LoginRequest struct {
-				Login    string `json:"login"`
-				Password string `json:"password"`
-			}
-
-			var request LoginRequest
-			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-				log.Println("auth error", err)
-			}
-
-			//Проверка в БД на совпадения логина и пароля
-			if request.Login == "admin" && request.Password == "123123" {
-				cookie := &http.Cookie{
-					Name:  "auth",
-					Value: "100",
-					Path:  "/",
-				}
-				http.SetCookie(w, cookie)
-
-				w.WriteHeader(http.StatusOK)
-				w.Write([]byte("Авторизован"))
-				return
-			}
-
-			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte("Ошибка авторизации"))
-		})
+		r.Post("/registration", registerUser)
+		r.Post("/login", loginUser)
 	})
 
 	router.Group(func(r chi.Router) {
@@ -93,12 +64,19 @@ func main() {
 	}
 }
 
+type User struct {
+	Id       int    `json:"id"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
 type Book struct {
 	Id      int    `json:"id"`
 	Name    string `json:"name"`
 	Year    int    `json:"year"`
 	Image   string `json:"image"`
 	Visible int    `json:"visible"`
+	UserID  *int   `json:"user_id,omitempty"`
 }
 
 func getBookById(w http.ResponseWriter, r *http.Request) {
@@ -270,7 +248,7 @@ func deleteBook(w http.ResponseWriter, r *http.Request) {
 }
 
 func connectDB() *sql.DB {
-	db, err := sql.Open("pgx", "host=127.0.0.1 user=admin password=admin dbname=ramz sslmode=disable")
+	db, err := sql.Open("pgx", "host=127.0.0.1 user=postgres password=your_password dbname=bookstore sslmode=disable")
 	if err != nil {
 		log.Fatalf("connect db error %v", err)
 	}
@@ -353,18 +331,114 @@ func updateBookInDB(id int, book *Book) error {
 
 }
 
-func migration() {
-
-	_, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS books (
-		    id serial PRIMARY KEY,
-		    name VARCHAR(255) NOT NULL,
-		    year INTEGER DEFAULT 0,
-		    image VARCHAR(255) DEFAULT NULL,
-		    visible INTEGER DEFAULT 1
-		);
-	`)
-	if err != nil {
-		log.Fatalf("migration err %v", err)
+func registerUser(w http.ResponseWriter, r *http.Request) {
+	var reqData struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
 	}
+
+	err := json.NewDecoder(r.Body).Decode(&reqData)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte("Ошибка парсинга JSON"))
+		return
+	}
+
+	if reqData.Username == "" || reqData.Password == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte("Логин и пароль обязательны"))
+		return
+	}
+
+	var exists int
+
+	err = db.QueryRow("SELECT COUNT(*) FROM users WHERE username=$1", reqData.Username).Scan(&exists)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte("DB Err"))
+		return
+	}
+
+	if exists == 1 {
+		w.WriteHeader(http.StatusConflict)
+		w.Write([]byte("%w ,Есть Логин"))
+		return
+	}
+
+	res, err := db.Exec("INSERT INTO users (username, password) VALUES ($1, $2) RETURNING id", reqData.Username, reqData.Password)
+
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte("%w , Ошибка Сохранения"))
+		return
+	}
+
+	id, _ := res.LastInsertId()
+
+	cookie := &http.Cookie{
+		Name:  "auth",
+		Value: fmt.Sprintf("%d, id"),
+		Path:  "/",
+	}
+
+	http.SetCookie(w, cookie)
+
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]int{"user_id": int(id)})
+}
+
+func loginUser(w http.ResponseWriter, r *http.Request) {
+	type LoginRequest struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+
+	var req LoginRequest
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		http.Error(w, "Ошибка парсинга", http.StatusBadRequest)
+		return
+	}
+
+	var userId int
+	err = db.QueryRow("SELECT id FROM users WHERE username=$1 AND password=$2",
+		req.Username, req.Password).Scan(&userId)
+	if err != nil {
+		http.Error(w, "Неверные данные", http.StatusUnauthorized)
+		return
+	}
+
+	cookie := &http.Cookie{
+		Name:  "auth",
+		Value: fmt.Sprintf("%d", userId),
+		Path:  "/",
+	}
+	http.SetCookie(w, cookie)
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("Авторизация успешна"))
+}
+
+func migration() {
+	_, err := db.Exec(`
+        CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
+            username VARCHAR(255) NOT NULL UNIQUE,
+            password VARCHAR(255) NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS books (
+            id SERIAL PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            year INTEGER DEFAULT 0,
+            image VARCHAR(255),
+            visible INTEGER DEFAULT 1,
+            user_id INTEGER REFERENCES users(id) ON DELETE SET NULL
+        );
+    `)
+	if err != nil {
+		log.Fatalf("Ошибка миграции: %v", err)
+	}
+
+	fmt.Println("Миграция успешно выполнена!")
 }
