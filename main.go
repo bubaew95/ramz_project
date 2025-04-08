@@ -90,7 +90,7 @@ func getBookById(w http.ResponseWriter, r *http.Request) {
 
 	// Разница между query и queryRow
 
-	row := db.QueryRow(`SELECT id, name, year, image, visible FROM books WHERE id = $1`, id)
+	row := db.QueryRow(`SELECT id, name, year, image, visible, userId FROM books WHERE id = $1`, id)
 	if err := row.Err(); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte("Ошибка получения данных"))
@@ -98,7 +98,7 @@ func getBookById(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var book Book
-	err := row.Scan(&book.Id, &book.Name, &book.Year, &book.Image, &book.Visible)
+	err := row.Scan(&book.Id, &book.Name, &book.Year, &book.Image, &book.Visible, &book.UserID)
 	if err != nil {
 		w.WriteHeader(http.StatusNotFound)
 		w.Write([]byte("В БД нет данных по id: " + id))
@@ -150,7 +150,6 @@ func createBook(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	var newBook Book
-
 	err := json.NewDecoder(r.Body).Decode(&newBook)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -160,20 +159,34 @@ func createBook(w http.ResponseWriter, r *http.Request) {
 
 	if newBook.Name == "" || newBook.Year == 0 {
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte("Названия и год книги обязательны"))
+		w.Write([]byte("Название и год книги обязательны"))
 		return
 	}
 
-	err = insertBook(&newBook)
+	cookie, err := r.Cookie("auth")
 	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte("Авторизация требуется"))
+		return
+	}
+
+	userId, err := strconv.Atoi(cookie.Value)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte("Неверная авторизация"))
+		return
+	}
+
+	bookId, err := insertBook(&newBook, userId)
+	if err != nil {
+		log.Printf("Ошибка записи книги: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte("Ошибка записи в БД"))
 		return
 	}
 
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(newBook)
-
+	json.NewEncoder(w).Encode(map[string]int{"book_id": bookId})
 }
 
 func updateBook(w http.ResponseWriter, r *http.Request) {
@@ -197,7 +210,7 @@ func updateBook(w http.ResponseWriter, r *http.Request) {
 
 	if updateBook.Name == "" || updateBook.Year == 0 {
 		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte("Названия и год книги обязательны"))
+		w.Write([]byte("Название и год книги обязательны"))
 		return
 	}
 
@@ -207,16 +220,15 @@ func updateBook(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
 			w.Write([]byte("Book not found"))
 		} else {
+			log.Printf("Ошибка обновления: %v", err)
 			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte("ошибка обновления"))
+			w.Write([]byte("Ошибка обновления"))
 		}
-
 		return
 	}
 
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(updateBook)
-
 }
 
 func deleteBook(w http.ResponseWriter, r *http.Request) {
@@ -280,45 +292,45 @@ func deleteFromDB(id int) error {
 	return nil
 }
 
-func insertBook(book *Book) error {
-
+func insertBook(book *Book, userId int) (int, error) {
 	query := `
-	    INSERT INTO books (name, year, image, visible)
-    	VALUES ($1, $2, $3, $4)
-    	RETURNING id
-`
+        INSERT INTO books (name, year, image, visible, user_id)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING id
+    `
 
+	// Выполняем запрос и получаем сгенерированный ID
+	var newBookId int
 	err := db.QueryRow(query,
 		book.Name,
 		book.Year,
 		book.Image,
 		book.Visible,
-	).Scan(&book.Id)
+		userId,
+	).Scan(&newBookId)
 
 	if err != nil {
-		return fmt.Errorf("Ошибка вставки книги: %w", err)
+		return 0, fmt.Errorf("ошибка вставки книги: %w", err)
 	}
 
-	return nil
-
+	return newBookId, nil
 }
 
 func updateBookInDB(id int, book *Book) error {
-
 	query := `
-	    UPDATE books
-    	SET name = $1, year = $2, image = $3, visible = $4
-    	WHERE id = $5
-`
-
-	res, err := db.Exec(query,
+        UPDATE books
+        SET name = $1, year = $2, image = $3, visible = $4
+    `
+	args := []interface{}{
 		book.Name,
 		book.Year,
 		book.Image,
 		book.Visible,
-		id+1,
-	)
+	}
+
+	res, err := db.Exec(query, args...)
 	if err != nil {
+		log.Printf("Ошибка выполнения запроса: %v", err)
 		return err
 	}
 
@@ -328,7 +340,6 @@ func updateBookInDB(id int, book *Book) error {
 	}
 
 	return nil
-
 }
 
 func registerUser(w http.ResponseWriter, r *http.Request) {
