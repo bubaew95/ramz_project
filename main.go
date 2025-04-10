@@ -80,7 +80,6 @@ type Book struct {
 }
 
 func getBookById(w http.ResponseWriter, r *http.Request) {
-
 	id := chi.URLParam(r, "id")
 	if strings.TrimSpace(id) == "" {
 		w.WriteHeader(http.StatusBadRequest)
@@ -88,20 +87,17 @@ func getBookById(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Разница между query и queryRow
-
-	row := db.QueryRow(`SELECT id, name, year, image, visible, userId FROM books WHERE id = $1`, id)
-	if err := row.Err(); err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("Ошибка получения данных"))
-		return
-	}
-
 	var book Book
-	err := row.Scan(&book.Id, &book.Name, &book.Year, &book.Image, &book.Visible, &book.UserID)
+	err := db.QueryRow(`SELECT id, name, year, image, visible, user_id FROM books WHERE id = $1`, id).
+		Scan(&book.Id, &book.Name, &book.Year, &book.Image, &book.Visible, &book.UserID)
 	if err != nil {
-		w.WriteHeader(http.StatusNotFound)
-		w.Write([]byte("В БД нет данных по id: " + id))
+		if err == sql.ErrNoRows {
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte("Книга с таким id отсутсвует: " + id))
+		} else {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("Ощибка получении книги: " + err.Error()))
+		}
 		return
 	}
 
@@ -109,9 +105,7 @@ func getBookById(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(&book); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-
-		w.Write([]byte("Ошибка кодирования Json"))
-		return
+		w.Write([]byte("Ошибка кодирования JSON: " + err.Error()))
 	}
 }
 
@@ -254,8 +248,8 @@ func deleteBook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.WriteHeader(http.StatusNoContent)
 	w.Write([]byte("Успешно удалена книга"))
+	w.WriteHeader(http.StatusNoContent)
 
 }
 
@@ -320,12 +314,14 @@ func updateBookInDB(id int, book *Book) error {
 	query := `
         UPDATE books
         SET name = $1, year = $2, image = $3, visible = $4
+        WHERE id = $5
     `
 	args := []interface{}{
 		book.Name,
 		book.Year,
 		book.Image,
 		book.Visible,
+		id,
 	}
 
 	res, err := db.Exec(query, args...)
@@ -388,7 +384,7 @@ func registerUser(w http.ResponseWriter, r *http.Request) {
 
 	cookie := &http.Cookie{
 		Name:  "auth",
-		Value: fmt.Sprintf("%d, id"),
+		Value: fmt.Sprintf("%d", id),
 		Path:  "/",
 	}
 
